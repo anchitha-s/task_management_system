@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "default": "task-management-system-23a4a",
+    "dev": "task-management-system-23a4a"
+  },
+  "targets": {},
+  "etags": {}
+}

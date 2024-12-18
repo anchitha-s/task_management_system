@@ -1,0 +1,20 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Rules for the tasks collection
+    match /tasks/{taskId} {
+      allow read: if request.auth != null && (
+        resource.data.createdBy == request.auth.uid ||  // User can read their own tasks
+        resource.data.assignee == request.auth.uid ||  // User can read tasks assigned to them
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'  // Admin can read all tasks
+      );
+      allow write: if request.auth != null && request.resource.data.createdBy == request.auth.uid;  // Only the creator can write
+    }
+    
+    // Rules for the users collection (admins can write/edit user data)
+    match /users/{userId} {
+      allow read: if request.auth != null; // Allow all authenticated users to read user details
+      allow write: if request.auth != null && request.auth.uid == userId; // Users can only write to their own document
+    }
+  }
+}
