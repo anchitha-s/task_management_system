@@ -3,6 +3,9 @@ const admin = require("firebase-admin");
 const { initializeApp } = require("firebase/app");
 const { getAuth, signInWithEmailAndPassword } = require("firebase/auth");
 const nodemailer = require("nodemailer");
+const dotenv = require('dotenv');
+dotenv.config();
+
 
 const firebaseConfig = {
   apiKey: "AIzaSyA8tcMmV84T6YbHoqrOWdkOVA1B_NJiqs0",
@@ -14,13 +17,21 @@ const firebaseConfig = {
   measurementId: "G-6W33ZXMPRM",
 };
 
-const transporter = nodemailer.createTransport({
+let transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: "test@gmail.com",
-    pass: "testPassword@",
+    user: 'email', //Use Gmail of the user
+    pass: 'password',  //Use password of the gmail account
   },
 });
+
+// let transporter = nodemailer.createTransport({
+//   service: "gmail",
+//   auth: {
+//     user: process.env.GUSER, // Use Gmail user from the environment variable
+//     pass: process.env.GPASS, // Use Gmail password from the environment variable
+//   },
+// });
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -29,9 +40,41 @@ const appFirebase = initializeApp(firebaseConfig);
 // Initialize Firebase Authentication
 const auth = getAuth(appFirebase);
 
+// Middleware for Role-Based Access Control
+const checkAdminRole = async (userId) => {
+  try {
+    const userDoc = await admin
+      .firestore()
+      .collection("users")
+      .doc(userId)
+      .get();
+
+    if (!userDoc.exists) {
+      throw new Error("User not found");
+    }
+
+    const userData = userDoc.data();
+    return userData.role === "admin"; // Assuming 'role' field in Firestore user document
+  } catch (error) {
+    console.error("Error verifying admin role:", error);
+    throw new functions.https.HttpsError("internal", "Failed to verify role");
+  }
+};
+
 // User Registration
 exports.registerUser = functions.https.onRequest(async (req, res) => {
   const { email, password, name, profilePicture, role } = req.body;
+
+  // Allowed role values
+  const allowedRoles = ["admin", "user"];
+  if (!allowedRoles.includes(role)) {
+    return res.status(400).send({
+      error: `Invalid role value. Allowed values are: ${allowedRoles.join(
+        ", "
+      )}.`,
+    });
+  }
+
   try {
     const userRecord = await admin.auth().createUser({
       email,
@@ -83,33 +126,16 @@ exports.updateUserProfile = functions.https.onRequest(async (req, res) => {
   }
 });
 
-// Middleware for Role-Based Access Control
-const isAdmin = async (uid) => {
-  const userDoc = await admin.firestore().collection("users").doc(uid).get();
-  return userDoc.exists && userDoc.data().role === "admin";
-};
-
-exports.adminFunction = functions.https.onRequest(async (req, res) => {
-  const uid = req.body.uid; // Assume uid is sent in the request body
-
-  if (await isAdmin(uid)) {
-    return true;
-    // res.status(200).send({ message: "Admin access granted" });
-  } else {
-    // res.status(403).send({ error: "Access denied" });
-    return false;
-  }
-});
-
 // Create Task
 exports.tasks = functions.https.onRequest(async (req, res) => {
+  console.log(process.env.GMAIL_USER)
   const { title, description, assignee } = req.body;
   const createdBy = req.body.uid; // Assuming uid is passed in the request
   const createdAt = Date.now();
   const taskData = {
     title,
     description,
-    status: "pending",
+    status: "created",
     assignee,
     createdAt,
     createdBy,
@@ -196,60 +222,154 @@ exports.getTasks = functions.https.onRequest(async (req, res) => {
   }
 });
 
-// delete a task (protected route)
-exports.deleteTask = functions.https.onRequest(async (data) => {
-  console.log(data);
-  // Check if the user is an admin
-  const admin = await isAdmin(data.userId);
-  console.log(admin);
+exports.updateTaskStatus = functions.https.onRequest(async (req, res) => {
+  const { taskId, status } = req.body;
 
-  // Proceed with deleting the task
-  const taskId = data.taskId;
+  // Allowed status values
+  const allowedStatuses = ["created", "pending", "completed"];
+
+  // Check if both taskId and status are provided
+  if (!taskId || !status) {
+    return res.status(400).send({ error: "taskId and status are required." });
+  }
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).send({
+      error: `Invalid status value. Allowed values are: ${allowedStatuses.join(
+        ", "
+      )}.`,
+    });
+  }
 
   try {
+    const taskRef = admin.firestore().collection("tasks").doc(taskId);
+    const taskSnapshot = await taskRef.get();
+
+    // Check if the task exists
+    if (!taskSnapshot.exists) {
+      return res.status(404).send({ error: "Task not found." });
+    }
+
+    // Update the status field of the task
+    await taskRef.update({ status });
+
+    res.status(200).send({ message: "Task status updated successfully." });
+  } catch (error) {
+    res.status(500).send({
+      error: "An error occurred while updating the task.",
+      details: error.message,
+    });
+  }
+});
+
+// delete a task (protected route)
+exports.deleteTask = functions.https.onRequest(async (req, res) => {
+  try {
+    const userId = req.body.userId;
+    const taskId = req.body.taskId;
+
+    if (!userId || !taskId) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "User ID and Task ID are required"
+      );
+    }
+
+    // Check if the user is an admin
+    const isadmin = await checkAdminRole(userId);
+    if (!isadmin) {
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        "No permission to do the Action"
+      );
+    }
+
+    // Proceed with deleting the task
     const taskRef = admin.firestore().collection("tasks").doc(taskId);
     const taskDoc = await taskRef.get();
 
     if (!taskDoc.exists) {
-      throw new Error("Task not found");
+      throw new functions.https.HttpsError("not-found", "Task not found");
     }
 
     await taskRef.delete();
+    console.log("Task deleted successfully");
 
-    return { message: "Task deleted successfully" };
+    res.status(200).send({ message: "Task deleted successfully" });
   } catch (error) {
-    throw new functions.https.HttpsError("internal", error.message);
+    console.error("Error deleting task:", error);
+    res.status(500).send({ error: error.message });
   }
 });
 
-// exports.taskNotification = functions.firestore
-//   .document("tasks/{taskId}")
-//   .onCreate(async (snap, context) => {
-//     const task = snap.data();
-//     const assigneeId = task.assignee;
+exports.dailySummary = functions.pubsub
+  .schedule("0 0 * * *")
+  .onRun(async (context) => {
+// exports.dailySummary = functions.https.onRequest(async (req, res) => {
+  const today = new Date();
+  const startOfDay = new Date(today.setHours(0, 0, 0, 0)).getTime(); // Convert to timestamp (milliseconds)
+  const endOfDay = new Date(today.setHours(23, 59, 59, 999)).getTime(); // Convert to timestamp (milliseconds)
 
-//     // Get user details
-//     const userDoc = await admin
-//       .firestore()
-//       .collection("users")
-//       .doc(assigneeId)
-//       .get();
-//     const userEmail = userDoc.data().email; // Assuming user document has email field
+  const tasksSnapshot = await admin
+    .firestore()
+    .collection("tasks")
+    .where("createdAt", ">=", startOfDay) // Use timestamp comparison
+    .where("createdAt", "<=", endOfDay) // Use timestamp comparison
+    .get();
 
-//     // Prepare email content
-//     const mailOptions = {
-//       from: "testemail@gmail.com",
-//       to: userEmail,
-//       subject: "New Task Assigned to You",
-//       text: `Hello, you have been assigned a new task: \n\nTitle: ${task.title}\nDescription: ${task.description}\nStatus: ${task.status}`,
-//     };
+  let created = 0,
+    completed = 0,
+    pending = 0;
 
-//     // Send the email (simulated with nodemailer)
-//     try {
-//       await transporter.sendMail(mailOptions);
-//       console.log("Email sent successfully to:", userEmail);
-//     } catch (error) {
-//       console.error("Error sending email:", error);
-//     }
-//   });
+  tasksSnapshot.forEach((doc) => {
+    const task = doc.data();
+    if (task.status === "completed") {
+      completed++;
+    } else if (task.status === "pending") {
+      pending++;
+    }
+    created++;
+  });
 
+  await admin.firestore().collection("dailySummaries").add({
+    date: new Date(),
+    created,
+    completed,
+    pending,
+  });
+
+  console.log(
+    `Daily Summary: Created: ${created}, Completed: ${completed}, Pending: ${pending}`
+  );
+});
+
+exports.taskNotification = functions.firestore
+  .document("tasks/{taskId}")
+  .onCreate(async (snap, context) => {
+    const task = snap.data();
+    const assigneeId = task.assignee;
+
+    // Get user details
+    const userDoc = await admin
+      .firestore()
+      .collection("users")
+      .doc(assigneeId)
+      .get();
+    const userEmail = userDoc.data().email; // Assuming user document has email field
+
+    // Prepare email content
+    const mailOptions = {
+      from: "testemail@gmail.com",
+      to: userEmail,
+      subject: "New Task Assigned to You",
+      text: `Hello, you have been assigned a new task: \n\nTitle: ${task.title}\nDescription: ${task.description}\nStatus: ${task.status}`,
+    };
+
+    // Send the email (simulated with nodemailer)
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log("Email sent successfully to:", userEmail);
+    } catch (error) {
+      console.error("Error sending email:", error);
+    }
+  });
