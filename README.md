@@ -60,7 +60,7 @@ This project is a serverless Task Management System using Firebase services. It 
 | PUT   | `/updateUserProfile`      | Update user profile                               |
 | POST   | `/tasks`      | Create a new task                               |
 | GET    | `/getTasks`      | Retrieve tasks for a user or admin              |
-| DELETE | `/tasks/:id`  | Delete a task (admin-only functionality)        |
+| DELETE | `/deleteTask`  | Delete a task (admin-only functionality)        |
 
 ### File Structure
 ```
